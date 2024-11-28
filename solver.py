@@ -1,29 +1,30 @@
-from model import Generator, AvgBlurGenerator
+from model import Generator
 from model import Discriminator
-from torch.autograd import Variable
 from torchvision.utils import save_image
 from torchvision import transforms as T
 import torch
 import torch.nn.functional as F
 import numpy as np
+from attacks import LinfPGDAttack
 import os
 import time
 import datetime
 import attacks
 from torchvision.utils import save_image
-from PIL import ImageFilter
-from PIL import Image
 from torchvision import transforms
 import torch.nn as nn
 from torchvision import transforms
 import defenses.smoothing as smoothing
 
+print(hasattr(LinfPGDAttack, 'perturb_blur_iter_full'))
+      
 # torch.manual_seed(0)
 # torch.backends.cudnn.deterministic = True
 # torch.backends.cudnn.benchmark = False
 np.random.seed(0)
+
 class LinfPGDAttack(object):
-    def __init__(self, model=None, device=None, epsilon=0.05, k=10, a=0.01, feat = None):
+    def __init__(self, model=None, device=None, epsilon=0.05, k=30, a=0.01, feat = None):
         """
         FGSM, I-FGSM and PGD attacks
         epsilon: magnitude of attack
@@ -75,6 +76,66 @@ class LinfPGDAttack(object):
         self.model.zero_grad()
 
         return X, X - X_nat
+    
+    def perturb_blur_iter_full(self, X_nat, y, c_trg):
+        """
+        Spread-spectrum attack against blur defenses (gray-box scenario).
+        """
+        if self.rand:
+            X = X_nat.clone().detach_() + torch.tensor(np.random.uniform(-self.epsilon, self.epsilon, X_nat.shape).astype('float32')).to(self.device)
+        else:
+            X = X_nat.clone().detach_()
+            # use the following if FGSM or I-FGSM and random seeds are fixed
+            # X = X_nat.clone().detach_() + torch.tensor(np.random.uniform(-0.001, 0.001, X_nat.shape).astype('float32')).cuda()  
+
+        # Gaussian blur kernel size
+        ks_gauss = 11
+        # Average smoothing kernel size
+        ks_avg = 3
+        # Sigma for Gaussian blur
+        sig = 1
+        # Type of blur
+        blur_type = 1
+
+        for i in range(self.k):
+            # Declare smoothing layer
+            if blur_type == 1:
+                preproc = smoothing.GaussianSmoothing2D(sigma=sig, channels=3, kernel_size=ks_gauss).to(self.device)
+            elif blur_type == 2:
+                preproc = smoothing.AverageSmoothing2D(channels=3, kernel_size=ks_avg).to(self.device)
+
+            X.requires_grad = True
+            output, feats = self.model.forward_blur(X, c_trg, preproc)
+
+            if self.feat:
+                output = feats[self.feat]
+
+            self.model.zero_grad()
+            loss = self.loss_fn(output, y)
+            loss.backward()
+            grad = X.grad
+
+            X_adv = X + self.a * grad.sign()
+
+            eta = torch.clamp(X_adv - X_nat, min=-self.epsilon, max=self.epsilon)
+            X = torch.clamp(X_nat + eta, min=-1, max=1).detach_()
+
+            # Iterate through blur types
+            if blur_type == 1:
+                sig += 0.5
+                if sig >= 3.2:
+                    blur_type = 2
+                    sig = 1
+            if blur_type == 2:
+                ks_avg += 2
+                if ks_avg >= 11:
+                    blur_type = 1
+                    ks_avg = 3
+
+        self.model.zero_grad()
+
+        return X, X - X_nat
+    
 
 class Solver(object):
     """Solver for training and testing StarGAN."""
@@ -1090,8 +1151,6 @@ class Solver(object):
         original_images_dir = "C:/Users/chzlzl/Desktop/disrupting-deepfakes-results/original_images"
         os.makedirs(original_images_dir, exist_ok=True)
 
-        processed_images_dir = "C:/Users/chzlzl/Desktop/disrupting-deepfakes-results/processed_images"
-        os.makedirs(processed_images_dir, exist_ok=True)
 
         attack_images_dir = "C:/Users/chzlzl/Desktop/disrupting-deepfakes-results/attack_images"
         os.makedirs(attack_images_dir, exist_ok=True)
@@ -1099,24 +1158,30 @@ class Solver(object):
         gan_output_dir = "C:/Users/chzlzl/Desktop/disrupting-deepfakes-results/gan_output_images"
         os.makedirs(gan_output_dir, exist_ok=True)
         
-
-        model_instance = self.G  # Replace with your model instance
-        device_instance = self.device
+        
+        
         
         for i, (x_real, c_org) in enumerate(data_loader):
             
+            
+            #x_real = (x_real + 1) / 2
+            # resize_transform = transforms.Resize((218, 178))
+            # x_real = resize_transform(x_real)
+            
             x_real = x_real.to(self.device)
+            
             c_trg_list = self.create_labels(c_org, self.c_dim, self.dataset, self.selected_attrs)
 
-            original_image_filename = os.path.join(original_images_dir, f'original_image_{i}.jpg')
+            with torch.no_grad():
+                x_original_transformed, _ = self.G(x_real, c_org)
             
-            save_image(x_real.cpu(), original_image_filename)
+            original_image_filename = os.path.join(original_images_dir, f'original_image_{i}.png')
             
-            transformed_image = self.celeba_loader.dataset.transform(T.ToPILImage()(x_real[0].cpu()))  # Convert to PIL Image first
-            processed_image_filename = os.path.join(processed_images_dir, f'processed_image_{i}.jpg')
-            save_image(transformed_image, processed_image_filename)
+            save_image(self.denorm(x_real.cpu()), original_image_filename)
+            print(f"Saved original input image to {original_image_filename}")
             
-            pgd_attack = LinfPGDAttack(model=self.G, device=self.device)
+            
+            
 
             
             for idx, c_trg in enumerate(c_trg_list):
@@ -1125,13 +1190,14 @@ class Solver(object):
                     gen_noattack, gen_noattack_feats = self.G(x_real, c_trg)
 
             # Attack
-                x_adv, perturb = pgd_attack.perturb(x_real, gen_noattack, c_trg) # -1 ~ 1 사이
+                pgd_attack = LinfPGDAttack(model=self.G, device=self.device)
+                x_adv, _ = pgd_attack.perturb(x_real, gen_noattack, c_trg)  # -1 ~ 1 사이
 
             # 공격 후 이미지를 JPG 파일로 저장
-                attack_image_filename = os.path.join(attack_images_dir, f'attack_image_{i}_{idx}.jpg')
-                x_adv = (x_adv + 1) / 2   # -1 ~ 1 => 0 ~ 1로 정규화 변환
-                resize_transform = transforms.Resize((218,178))
-                save_image(resize_transform(x_adv.cpu()), attack_image_filename)
+                attack_image_filename = os.path.join(attack_images_dir, f'attack_image_{i}_{idx}.png')
+                x_adv =(x_adv + 1) / 2
+                #resize_transform = transforms.Resize((218,178))
+                save_image((x_adv.cpu()), attack_image_filename)
 
             # Metrics
                 with torch.no_grad():
