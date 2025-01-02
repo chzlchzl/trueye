@@ -1,6 +1,4 @@
 import numpy as np
-import os
-import cv2
 from PIL import Image
 
 def PIL_to_cv2(image):

@@ -1,5 +1,4 @@
 import os
-
 import argparse
 from solver import Solver
 from data_loader import get_loader
@@ -85,7 +84,7 @@ if __name__ == '__main__':
     
     # Training configuration.
     parser.add_argument('--dataset', type=str, default='CelebA', choices=['CelebA', 'RaFD', 'Both'])
-    parser.add_argument('--batch_size', type=int, default=13, help='mini-batch size')
+    parser.add_argument('--batch_size', type=int, default=1, help='mini-batch size')
     parser.add_argument('--num_iters', type=int, default=200000, help='number of total iterations for training D')
     parser.add_argument('--num_iters_decay', type=int, default=100000, help='number of iterations for decaying lr')
     parser.add_argument('--g_lr', type=float, default=0.0001, help='learning rate for G')

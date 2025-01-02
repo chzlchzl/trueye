@@ -24,7 +24,7 @@ print(hasattr(LinfPGDAttack, 'perturb_blur_iter_full'))
 np.random.seed(0)
 
 class LinfPGDAttack(object):
-    def __init__(self, model=None, device=None, epsilon=0.05, k=30, a=0.01, feat = None):
+    def __init__(self, model=None, device=None, epsilon=0.1, k=30, a=0.01, feat = None):
         """
         FGSM, I-FGSM and PGD attacks
         epsilon: magnitude of attack

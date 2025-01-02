@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import sys
-
 import defenses.smoothing as smoothing
 
 class ResidualBlock(nn.Module):
